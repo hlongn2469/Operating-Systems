@@ -55,6 +55,7 @@ int checkRedirect(char **arg, int* cmd_size, char **file_input, char**file_outpu
         // input redirect
         if(strcmp("<", arg[i]) == 0){
             remove[remove_index] = i;
+            remove_index++;
             if(*cmd_size-1 == i){
                 printf("No input file provided");
                 break;
@@ -68,6 +69,7 @@ int checkRedirect(char **arg, int* cmd_size, char **file_input, char**file_outpu
         // output redirect
         } else if(strcmp(">", arg[i]) == 0){
             remove[remove_index] = i;
+            remove_index++;
             if(*cmd_size-1 == i){
                 printf("No output file provided");
                 break;
@@ -93,19 +95,6 @@ int checkRedirect(char **arg, int* cmd_size, char **file_input, char**file_outpu
     return flag;
 }
 
-void checkPipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
-    for(int i = 0; i < *cmd_size;i++){
-        // pipe detected
-        if(strcmp(args[i], "|") == 0){
-            free(args[i]);
-            args[i] = NULL;
-            *cmd_size2 = *cmd_size - i - 1;
-            *cmd_size = i;
-            *args2 = args + i + 1;
-            break;
-        }
-    }
-}
 int checkAmp(int* cmd_size, char **arg){
     int length = strlen(arg[*cmd_size-1]);
 
@@ -174,6 +163,79 @@ int parseInput(char* cmd, char *args[]){
     return arg_size;
 }
 
+int checkPipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
+    for(int i = 0; i < *cmd_size;i++){
+        // pipe detected
+        if(strcmp(args[i], "|") == 0){
+            free(args[i]);
+            args[i] = NULL;
+            *cmd_size2 = *cmd_size - i - 1;
+            *cmd_size = i;
+            *args2 = args + i + 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
+
+    // create pipe
+    int fd[2];
+    pipe(fd);
+
+    // fork 2 other processes: child process for 2nd cmd AND grandchild process of 1st cmd
+    pid_t process_id2 = fork();
+
+    // child process for 2nd cmd
+    if(process_id2 > 0){
+        // redirect I/O
+        char *file_input, *file_output;
+        int input_info, output_info;
+        int flag = checkRedirect(*args2, cmd_size2, &file_input, &file_output);
+
+        // disable input redirection
+        flag &= 2;
+
+        if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
+            return 0;
+        }
+
+        // needs research
+        close(fd[1]);
+        dup2(fd[0], STDIN_FILENO);
+        wait(NULL);
+        execvp(*args2[0], *args2);
+        closeFile(flag, input_info, output_info);
+        close(fd[0]);
+        fflush(stdin);
+
+        // grandchild process for the 1st cmd
+    } else if(process_id2 == 0){
+        // redirect I/O
+        char *file_input, *file_output;
+        int input_info, output_info;
+        int flag = checkRedirect(args, cmd_size, &file_input, &file_output);
+
+        // disable output redirection
+        flag = flag & 1; 
+
+        if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
+            return 0;
+        }
+
+        // needs research
+        close(fd[0]);
+        dup2(fd[1], STDOUT_FILENO);
+        wait(NULL);
+        execvp(args[0], args);
+        closeFile(flag, input_info, output_info);
+        close(fd[1]);
+        fflush(stdin);
+    }
+}
+
+
 int runCmd(char **args, int cmd_size){
     // detect & for concurrent running process first
     int concur = checkAmp(&cmd_size, args);
@@ -181,7 +243,6 @@ int runCmd(char **args, int cmd_size){
     // detect pipe
     int cmd_size2 = 0;
     char **args2;
-    checkPipe(args, &args2, &cmd_size, &cmd_size2);
 
     /**    
         * After reading user input, the steps are:    
@@ -200,62 +261,9 @@ int runCmd(char **args, int cmd_size){
 
     // child process 
     } else if (process_id == 0){
-        // if piple detected
-        if(cmd_size2 != 0){
-            // create pipe
-            int fd[2];
-            pipe(fd);
-
-            // fork 2 other processes: child process for 2nd cmd AND grandchild process of 1st cmd
-            pid_t process_id2 = fork();
-
-            // child process for 2nd cmd
-            if(process_id2 > 0){
-                // redirect I/O
-                char *file_input, *file_output;
-                int input_info, output_info;
-                int flag = checkRedirect(args2, &cmd_size2, &file_input, &file_output);
-
-                // disable input redirection
-                flag &= 2;
-
-                if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
-                    return 0;
-                }
-
-                // needs research
-                close(fd[1]);
-                dup2(fd[0], STDIN_FILENO);
-                wait(NULL);
-                execvp(args2[0], args2);
-                closeFile(flag, input_info, output_info);
-                close(fd[0]);
-                fflush(stdin);
-
-            // grandchild process for the 1st cmd
-            } else if(process_id2 == 0){
-                // redirect I/O
-                char *file_input, *file_output;
-                int input_info, output_info;
-                int flag = checkRedirect(args, &cmd_size, &file_input, &file_output);
-
-                // disable output redirection
-                flag = flag & 1; 
-
-                if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
-                    return 0;
-                }
-
-                // needs research
-                close(fd[0]);
-                dup2(fd[1], STDOUT_FILENO);
-                wait(NULL);
-                execvp(args[0], args);
-                closeFile(flag, input_info, output_info);
-                close(fd[1]);
-                fflush(stdin);
-            }
-        
+        // check pipe
+        if(checkPipe(args, &args2, &cmd_size, &cmd_size2) == 1){
+            executePipe(args, &args2, &cmd_size, &cmd_size2);
         // pipe undetected
         } else {
             // redirect I/O
