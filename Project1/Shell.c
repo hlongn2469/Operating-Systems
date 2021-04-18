@@ -88,7 +88,7 @@ int checkRedirect(char **arg, int* cmd_size, char **file_input, char**file_outpu
             arg[index] = arg[index+1];
             index++;
         }
-        *cmd_size--;
+        --*cmd_size;
     }
     return flag;
 }
@@ -118,7 +118,7 @@ int checkAmp(int* cmd_size, char **arg){
     if(length == 1){
         free(arg[*cmd_size-1]);
         arg[*cmd_size-1] = NULL;
-        *cmd_size--;
+        --*cmd_size;
 
     } else {
         arg[*cmd_size -1][length-1] = '\0';
@@ -126,30 +126,34 @@ int checkAmp(int* cmd_size, char **arg){
     return 1;
 }
 
+int checkHistory(char *arg, char* cmd){
+    if(strncmp(arg,"!!", 2) == 0){
+        // no history case
+        if(strlen(cmd) == 0){
+            return 0;
+        }
+        // regular case, just print the command out
+        printf("%s",cmd);
+        return 1;
+    }
+    // update command
+    strcpy(cmd,arg);
+    return 1;
+}
+
 // get the last command from the input history
-int getInput(char *cmd){
-    char input[MAX_LINE+1];
+int checkValidInput(char *cmd){
+    char arg[MAX_LINE+1];
     // no input case
-    if(fgets(input,MAX_LINE+1, stdin) == NULL){
+    if(fgets(arg,MAX_LINE+1, stdin) == NULL){
         printf("INVALID INPUT");
         return 0;
     }
 
-    
-    if(strncmp(input,"!!", 2) == 0){
-        // no history case
-        if(strlen(cmd) == 0){
-            printf("NO HISTORY AVAILABLE");
-            return 0;
-        }
-
-        // regular case, just print the command out
-        printf("%s", cmd);
-        return 1;
+    if(!checkHistory(arg, cmd)){
+        return 0;
     }
-
-    // update command
-    strcpy(cmd,input);
+    
     return 1;
 }
 
@@ -306,26 +310,21 @@ int main(void){
         emptyArgs(args);
 
         // get user input
-        if(!getInput(command_line)){
-            continue;
-        }  
+        if(checkValidInput(command_line)){
         
-        // extract input for commands 
-        int command_size = parseInput(command_line, args);
+            // extract input for commands 
+            int command_size = parseInput(command_line, args);
 
-        // if user enter nothing, continue to prompt
-        if(command_size == 0){
-            printf("enter command or exit shell by enter \"exit\" \n");
+            // if user enter exit, the program is done
+            if(strcmp("exit", args[0]) == 0){
+                break;
+            }
+
+            // after successfully parse the user input, run the command
+            runCmd(args, command_size);
+        } else {
             continue;
         }
-
-        // if user enter exit, the program is done
-        if(strcmp("exit", args[0]) == 0){
-            break;
-        }
-
-        // after successfully parse the user input, run the command
-        runCmd(args, command_size);
     }
     emptyArgs(args);  
     return 0;
