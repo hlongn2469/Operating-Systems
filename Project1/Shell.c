@@ -9,17 +9,6 @@
 
 #define MAX_LINE 80 /* The maximum length command */
 
-void closeFile(int flag, int input_info, int output_info){
-    if(flag & 1){
-        close(input_info);
-    }
-    
-    if(flag & 2){
-        close(output_info);
-    }
-
-    
-}
 
 int redirect(int flag, char* file_input, char* file_output, int* input_info, int* output_info){
     // output redirection case
@@ -195,7 +184,7 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
         int flag = checkRedirect(*args2, cmd_size2, &file_input, &file_output);
 
         // disable input redirection
-        flag &= 2;
+        flag = flag & 2;
 
         if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
             return 0;
@@ -206,7 +195,6 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
         dup2(fd[0], STDIN_FILENO);
         wait(NULL);
         execvp(*args2[0], *args2);
-        closeFile(flag, input_info, output_info);
         close(fd[0]);
         fflush(stdin);
 
@@ -229,17 +217,12 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
         dup2(fd[1], STDOUT_FILENO);
         wait(NULL);
         execvp(args[0], args);
-        closeFile(flag, input_info, output_info);
         close(fd[1]);
         fflush(stdin);
     }
 }
 
-
 int runCmd(char **args, int cmd_size){
-    // detect & for concurrent running process first
-    int concur = checkAmp(&cmd_size, args);
-
     // detect pipe
     int cmd_size2 = 0;
     char **args2;
@@ -270,18 +253,19 @@ int runCmd(char **args, int cmd_size){
             char *file_input, *file_output;
             int input_info, output_info;
             int flag = checkRedirect(args, &cmd_size, &file_input, &file_output);
+
+            
             if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
                 return 0;
             }
             execvp(args[0], args);
-            closeFile(flag, input_info, output_info);
             fflush(stdin);
         }
     
     // parent process
     } else {
         // wait if parent and child run concurrently
-        if(!concur){
+        if(!checkAmp(&cmd_size, args)){
             wait(NULL);
         }
     }
