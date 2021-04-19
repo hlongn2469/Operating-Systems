@@ -18,6 +18,9 @@ int checkValidInput(char *cmd);
 int parseInput(char* cmd, char *args[]);
 int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2);
 int checkPipe(char** args, char***args2, int* cmd_size, int* cmd_size2);
+int executeInputRedirect(char* file_input, int* input_info );
+int executeOutputRedirect(char* file_output, int* output_info);
+void executeAmpersand(char** args);
 
 int main(void){  
     char command_line[MAX_LINE];
@@ -61,16 +64,22 @@ int main(void){
                 // check pipe
                 if(checkPipe(args, &args2, &command, &cmd_size2) == 1){
                     executePipe(args, &args2, &command, &cmd_size2);
-                // pipe undetected
+                } 
+
+                if(checkAmp(&command, args)){
+                    executeAmpersand(args);
+                    exit(0);
+
                 } else {
                     // redirect I/O
                     char *file_input, *file_output;
                     int input_info, output_info;
                     int flag = setFlagIO(args, &command, &file_input, &file_output);
 
-                    
-                    if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
-                        return 0;
+                    if(flag & 1){
+                        executeInputRedirect(file_input, &input_info);
+                    } else if (flag & 2){
+                        executeOutputRedirect(file_output, &output_info);
                     }
                     execvp(args[0], args);
                     fflush(stdin);
@@ -81,8 +90,8 @@ int main(void){
                 // wait if parent and child run concurrently
                 if(!checkAmp(&command, args)){
                     waitpid(process_id, NULL, 0);
-                }
-            } 
+                } 
+            }
         } else {
             continue;
         }
@@ -90,33 +99,36 @@ int main(void){
     return 0;
 }
 
-int redirect(int flag, char* file_input, char* file_output, int* input_info, int* output_info){
-    // output redirection case
-    if(flag & 2){
-        *output_info = open(file_output, O_WRONLY | O_CREAT | O_TRUNC, 644);
-        if(*output_info < 0){
-            printf("Can't open output file");
-            return 0;
-        }
-        dup2(*output_info, STDOUT_FILENO);
+int executeInputRedirect(char* file_input, int* input_info ){
+    // open file
+    FILE *read_file = NULL;
+    read_file = fopen(file_input, "r");
+    if (read_file == NULL) {
+        perror(file_input);
+        return 0;
     }
 
-    // input redirection case
-    if(flag & 1){
-        // open file
-        FILE *read_file = NULL;
-        read_file = fopen(file_input, "r"); // for read
-        if (read_file == NULL) {
-            perror(file_input);
-            return 0;
-        }
+    // run descriptor
+    dup2(fileno(read_file), STDIN_FILENO);
 
-        // run descriptor
-        dup2(fileno(read_file), STDIN_FILENO);
+    // close file
+    fclose(read_file);
+}
 
-        // close file
-        fclose(read_file);
+int executeOutputRedirect(char* file_output, int* output_info){
+    // open file
+    FILE *write_file = NULL;
+    write_file = fopen(file_output, "w+"); 
+    if (write_file == NULL) {
+        perror(file_output);
+        return 0;
     }
+
+    // run descriptor
+    dup2(fileno(write_file), STDOUT_FILENO);
+
+    // close file
+    fclose(write_file);
     return 1;
 }
 
@@ -172,23 +184,14 @@ int setFlagIO(char **arg, int* cmd_size, char **file_input, char**file_output){
 }
 
 int checkAmp(int* cmd_size, char **arg){
-    int length = strlen(arg[*cmd_size-1]);
-
-    // & not detected
-    if(arg[*cmd_size-1][length-1] != '&'){
-        return 0;
+    int is_amp, index = 0;
+    while (arg[index] != NULL) {
+        if (strcmp(arg[index], "&") == 0) {
+  			is_amp = 1;
+  		}
+        index++;
     }
-
-    // only contains &
-    if(length == 1){
-        free(arg[*cmd_size-1]);
-        arg[*cmd_size-1] = NULL;
-        --*cmd_size;
-
-    } else {
-        arg[*cmd_size -1][length-1] = '\0';
-    }
-    return 1;
+    return is_amp;
 }
 
 int checkHistory(char *arg, char* cmd){
@@ -265,7 +268,6 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
 
     // child process for 2nd cmd
     if(process_id2 > 0){
-        // needs research
         close(fd[1]);
         dup2(fd[0], STDIN_FILENO);
         wait(NULL);
@@ -281,5 +283,82 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
         execvp(args[0], args);
         close(fd[1]);
         fflush(stdin);
+    }
+}
+
+void executeAmpersand(char** args) {
+
+    // retrieve last index of the arg
+    int last_index = 0;
+    while (args[last_index] != 0) {
+        last_index++;
+    }
+
+    int isEndHas = 0;
+    // end with another & or j
+    if (strcmp(args[last_index - 1], ";") == 0 
+        || strcmp(args[last_index - 1], "&") == 0) {
+        isEndHas = 1;
+    }  
+    
+    if (isEndHas){
+        args[last_index - 1] = NULL;
+    }
+
+    // left and right arg
+    char *left_command[MAX_LINE/2 + 1];  
+    char *right_command[MAX_LINE/2 + 1];
+
+    // check middle point where & stands
+    int middle_seperator_index = 0;
+    for (int j = 0; j < last_index && middle_seperator_index == 0; j++) {        
+        if (strcmp(args[j], "&") == 0) {
+            middle_seperator_index = j;
+        }        
+    }
+
+    // put left cmd into left arg
+    int left_cmd_index = 0;
+    for(int i = 0; i < middle_seperator_index; i++) {
+        left_command[left_cmd_index++] = args[i];
+    }
+
+    left_command[left_cmd_index] = NULL;    
+
+    // put right cmd into right arg
+    int right_cmd_index = 0;
+    for (int i = middle_seperator_index + 1; i < last_index; i++) {
+        right_command[right_cmd_index++] = args[i];
+    }
+
+    right_command[right_cmd_index] = NULL;
+
+    // fork
+    int pid = fork();
+
+    // failedd fork
+    if (pid < 0) {
+        fprintf(stderr, "Fork Failed");
+        exit(EXIT_FAILURE);
+    }
+
+    else if (pid == 0) {    
+        // execute left command
+        for(int i = 0; i < left_cmd_index; i++) {
+            args[i] = left_command[i];
+        }
+
+        args[left_cmd_index] = NULL;
+
+        execvp(args[0], args);
+        
+    } else {
+        // execute right command
+        for (int i = 0; i < right_cmd_index; i++) {
+            args[i] = right_command[i];
+        }
+        args[right_cmd_index] = NULL;
+
+        execvp(args[0], args);
     }
 }
