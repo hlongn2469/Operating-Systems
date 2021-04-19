@@ -33,7 +33,6 @@ int main(void){
     while (should_run) {    
         printf("osh>");    
         fflush(stdout);    
-        fflush(stdin);
 
         // check input and print prompt
         if(checkValidInput(command_line)){
@@ -62,14 +61,15 @@ int main(void){
             // child process 
             } else if (process_id == 0){
                 // check pipe
-                if(checkPipe(args, &args2, &command, &cmd_size2) == 1){
-                    executePipe(args, &args2, &command, &cmd_size2);
-                } 
-
                 if(checkAmp(&command, args)){
                     executeAmpersand(args);
                     exit(0);
 
+                }
+
+                if(checkPipe(args, &args2, &command, &cmd_size2) == 1){
+                    executePipe(args, &args2, &command, &cmd_size2);
+                    
                 } else {
                     // redirect I/O
                     char *file_input, *file_output;
