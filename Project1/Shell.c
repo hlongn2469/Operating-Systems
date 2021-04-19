@@ -6,9 +6,89 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <errno.h>
 
 #define MAX_LINE 80 /* The maximum length command */
 
+int redirect(int flag, char* file_input, char* file_output, int* input_info, int* output_info);
+int setFlagIO(char **arg, int* cmd_size, char **file_input, char**file_output);
+int checkAmp(int* cmd_size, char **arg);
+int checkHistory(char *arg, char* cmd);
+int checkValidInput(char *cmd);
+int parseInput(char* cmd, char *args[]);
+int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2);
+int checkPipe(char** args, char***args2, int* cmd_size, int* cmd_size2);
+
+int main(void){  
+    char command_line[MAX_LINE];
+    char *args[MAX_LINE/2 + 1]; /* command line arguments */  
+    int should_run = 1; /* flag to determine when to exit program */ 
+
+    // initialize the command_line
+    strcpy(command_line, "");
+
+    while (should_run) {    
+        printf("osh>");    
+        fflush(stdout);    
+        fflush(stdin);
+
+        // check input and print prompt
+        if(checkValidInput(command_line)){
+        
+            // extract input for commands 
+            int command = parseInput(command_line, args);
+
+            // if user enter exit, the program is done
+            if(strcmp("exit", args[0]) == 0){
+                break;
+            }
+
+            // after successfully parse the user input, run the command
+            // detect pipe
+            int cmd_size2 = 0;
+            char **args2;
+
+            // create child process and execute the command
+            pid_t process_id = fork();
+
+            // fork unsucessfully
+            if(process_id < 0){
+                printf("fork failed");
+                return 0;
+
+            // child process 
+            } else if (process_id == 0){
+                // check pipe
+                if(checkPipe(args, &args2, &command, &cmd_size2) == 1){
+                    executePipe(args, &args2, &command, &cmd_size2);
+                // pipe undetected
+                } else {
+                    // redirect I/O
+                    char *file_input, *file_output;
+                    int input_info, output_info;
+                    int flag = setFlagIO(args, &command, &file_input, &file_output);
+
+                    
+                    if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
+                        return 0;
+                    }
+                    execvp(args[0], args);
+                    fflush(stdin);
+                }
+            
+            // parent process
+            } else {
+                // wait if parent and child run concurrently
+                if(!checkAmp(&command, args)){
+                    waitpid(process_id, NULL, 0);
+                }
+            } 
+        } else {
+            continue;
+        }
+    } 
+    return 0;
+}
 
 int redirect(int flag, char* file_input, char* file_output, int* input_info, int* output_info){
     // output redirection case
@@ -23,17 +103,24 @@ int redirect(int flag, char* file_input, char* file_output, int* input_info, int
 
     // input redirection case
     if(flag & 1){
-        *input_info = open(file_input, O_RDONLY, 0644);
-        if(*input_info < 0){
-            printf("Can't open input file");
+        // open file
+        FILE *read_file = NULL;
+        read_file = fopen(file_input, "r"); // for read
+        if (read_file == NULL) {
+            perror(file_input);
             return 0;
         }
-        dup2(*input_info, STDIN_FILENO);
+
+        // run descriptor
+        dup2(fileno(read_file), STDIN_FILENO);
+
+        // close file
+        fclose(read_file);
     }
     return 1;
 }
 
-int checkRedirect(char **arg, int* cmd_size, char **file_input, char**file_output){
+int setFlagIO(char **arg, int* cmd_size, char **file_input, char**file_output){
     int flag = 0, remove_index = 0;
     int remove[4];
     for(int i = 0; i < *cmd_size; i++){
@@ -178,18 +265,6 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
 
     // child process for 2nd cmd
     if(process_id2 > 0){
-        // redirect I/O
-        char *file_input, *file_output;
-        int input_info, output_info;
-        int flag = checkRedirect(*args2, cmd_size2, &file_input, &file_output);
-
-        // disable input redirection
-        flag = flag & 2;
-
-        if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
-            return 0;
-        }
-
         // needs research
         close(fd[1]);
         dup2(fd[0], STDIN_FILENO);
@@ -200,19 +275,6 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
 
         // grandchild process for the 1st cmd
     } else if(process_id2 == 0){
-        // redirect I/O
-        char *file_input, *file_output;
-        int input_info, output_info;
-        int flag = checkRedirect(args, cmd_size, &file_input, &file_output);
-
-        // disable output redirection
-        flag = flag & 1; 
-
-        if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
-            return 0;
-        }
-
-        // needs research
         close(fd[0]);
         dup2(fd[1], STDOUT_FILENO);
         wait(NULL);
@@ -220,104 +282,4 @@ int executePipe(char** args, char***args2, int* cmd_size, int* cmd_size2){
         close(fd[1]);
         fflush(stdin);
     }
-}
-
-int runCmd(char **args, int cmd_size){
-    // detect pipe
-    int cmd_size2 = 0;
-    char **args2;
-
-    /**    
-        * After reading user input, the steps are:    
-        * (1) fork a child process using fork()    
-        * (2) the child process will invoke execvp()    
-        * (3) parent will invoke wait() unless command included &   
-    */
-
-    // create child process and execute the command
-    pid_t process_id = fork();
-
-    // fork unsucessfully
-    if(process_id < 0){
-        printf("fork failed");
-        return 0;
-
-    // child process 
-    } else if (process_id == 0){
-        // check pipe
-        if(checkPipe(args, &args2, &cmd_size, &cmd_size2) == 1){
-            executePipe(args, &args2, &cmd_size, &cmd_size2);
-        // pipe undetected
-        } else {
-            // redirect I/O
-            char *file_input, *file_output;
-            int input_info, output_info;
-            int flag = checkRedirect(args, &cmd_size, &file_input, &file_output);
-
-            
-            if(redirect(flag, file_input, file_output, &input_info, &output_info) == 0){
-                return 0;
-            }
-            execvp(args[0], args);
-            fflush(stdin);
-        }
-    
-    // parent process
-    } else {
-        // wait if parent and child run concurrently
-        if(!checkAmp(&cmd_size, args)){
-            wait(NULL);
-        }
-    }
-    return 1;
-}
-
-// deallocate memory in args to avoid mem leaks
-void emptyArgs(char *arg[]){
-    for(int i = 0; i < MAX_LINE/2 + 1; i++){
-        free(arg[i]);
-        arg[i] = NULL;
-    }
-}
-
-int main(void){  
-    char command_line[MAX_LINE];
-    char *args[MAX_LINE/2 + 1]; /* command line arguments */  
-    int should_run = 1; /* flag to determine when to exit program */ 
-
-    // initialize elements of args array
-    for(int i = 0; i < MAX_LINE/2+1; i++){
-        args[i] = NULL;
-    }
-
-    // initialize the command_line
-    strcpy(command_line, "");
-
-    while (should_run) {    
-        printf("osh>");    
-        fflush(stdout);    
-        fflush(stdin);
-
-        // empty args before parsing
-        emptyArgs(args);
-
-        // get user input
-        if(checkValidInput(command_line)){
-        
-            // extract input for commands 
-            int command_size = parseInput(command_line, args);
-
-            // if user enter exit, the program is done
-            if(strcmp("exit", args[0]) == 0){
-                break;
-            }
-
-            // after successfully parse the user input, run the command
-            runCmd(args, command_size);
-        } else {
-            continue;
-        }
-    }
-    emptyArgs(args);  
-    return 0;
 }
